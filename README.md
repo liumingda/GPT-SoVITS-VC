@@ -19,17 +19,7 @@
 ```bash
 python GPT_SoVITS/vc.py
 ```
-WebUI 界面参数说明
-SoVITS模型列表: 选择要使用的 SoVITS 模型权重文件。
-
-参考音频: 上传一段目标音色（希望复刻的声音）的音频。
-
-源音频: 上传包含原始说话内容的音频文件。
-
-语速调整: 调整输出语音的语速（默认：1.0）。
-
-变调: 调整音高，单位为半音（正数升调，负数降调，默认：0）。
-
+https://github.com/user-attachments/assets/da8566b5-06fd-4615-b0bd-e47b47c8acbe
 注意: 运行此脚本需要预先安装 funasr 库，并确保已下载对应的 ASR 模型。
 
 ## 2. 带手动文本输入的语音转换 (vc_with_text.py)
@@ -42,21 +32,7 @@ SoVITS模型列表: 选择要使用的 SoVITS 模型权重文件。
 ```bash
 python GPT_SoVITS/vc_with_text.py
 ```
-WebUI 界面参数说明
-SoVITS模型列表: 选择要使用的 SoVITS 模型权重文件。
-
-参考音频: 上传一段目标音色（希望复刻的声音）的音频。
-
-源音频: 上传包含原始说话内容的音频文件。
-
-源文本: 输入源音频中对应的准确文本内容。
-
-Speed (语速调节): 调整语速。
-
-Pitch Shift (变调): 调整音高。
-
-注意: 当前版本默认将输入文本作为中文/混合语种处理（使用 all_zh 模式）。请确保源文本格式符合要求。
-
+https://github.com/user-attachments/assets/a81c8084-dd99-4886-af99-1deea9c260ff
 ### 支持的模型版本
 本项目支持 GPT-SoVITS 的所有主要版本：
 v1, v2, v3, v4, v2pro, v2proplus
