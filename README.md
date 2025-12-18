@@ -19,7 +19,9 @@
 ```bash
 python GPT_SoVITS/vc.py
 ```
-https://github.com/user-attachments/assets/da8566b5-06fd-4615-b0bd-e47b47c8acbe
+
+https://github.com/user-attachments/assets/2beff96f-cd05-4d5a-ae58-c664c6f81c6e
+
 注意: 运行此脚本需要预先安装 funasr 库，并确保已下载对应的 ASR 模型。
 
 ## 2. 带手动文本输入的语音转换 (vc_with_text.py)
