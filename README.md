@@ -1,6 +1,6 @@
 # GPT-SoVITS-VC (zero-shot)
 
-本项目基于 GPT-SoVITS 实现zero-shot 语音转换（Voice Conversion, VC）功能。它能够将源音频中的语音转换为参考音频的音色，同时保留源音频的语音内容和韵律语调。
+本项目基于 GPT-SoVITS 实现zero-shot 语音转换（Voice Conversion, VC）功能。它能够将源音频中的语音转换为参考音频的音色，同时保留源音频的语音内容和韵律语调。本项目支持 GPT-SoVITS 的所有版本：v1, v2, v3, v4, v2pro, v2proplus
 
 ## 概述
 环境配置和模型下载与原项目相同，本项目目前提供两个主要的语音转换脚本：
@@ -35,9 +35,6 @@ https://github.com/user-attachments/assets/2beff96f-cd05-4d5a-ae58-c664c6f81c6e
 python GPT_SoVITS/vc_with_text.py
 ```
 https://github.com/user-attachments/assets/a81c8084-dd99-4886-af99-1deea9c260ff
-### 支持的模型版本
-本项目支持 GPT-SoVITS 的所有主要版本：
-v1, v2, v3, v4, v2pro, v2proplus
 
 ### 参考项目
 https://github.com/RVC-Boss/GPT-SoVITS
