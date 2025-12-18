@@ -30,6 +30,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 
 from config import change_choices, get_weights_names, name2gpt_path, name2sovits_path
 
+# from funasr import AutoModel 
+
 SoVITS_names, GPT_names = get_weights_names()
 from config import pretrained_sovits_name
 
@@ -53,8 +55,8 @@ with open("./weight.json", "r", encoding="utf-8") as file:
 
 cnhubert_base_path = os.environ.get("cnhubert_base_path", "GPT_SoVITS/pretrained_models/chinese-hubert-base")
 bert_path = os.environ.get("bert_path", "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large")
-infer_ttswebui = os.environ.get("infer_ttswebui", 9873)
-infer_ttswebui = int(infer_ttswebui)
+infer_vcwebui = os.environ.get("infer_vcwebui", 9873)
+infer_vcwebui = int(infer_vcwebui)
 is_share = os.environ.get("is_share", "False")
 is_share = eval(is_share)
 if "_CUDA_VISIBLE_DEVICES" in os.environ:
@@ -240,7 +242,6 @@ def change_sovits_weights(sovits_path):
     with open("./weight.json", "w") as f:
         f.write(json.dumps(data))
     
-    # return i18n("模型加载成功:") + sovits_path
     return f'''
     <div style="
         border: 1px solid #e5e7eb;
@@ -489,25 +490,60 @@ spec_max = 2
 
 cache = {}
 
+def norm_spec(x):
+    return (x - spec_min) / (spec_max - spec_min) * 2 - 1
+
+def denorm_spec(x):
+    return (x + 1) / 2 * (spec_max - spec_min) + spec_min
+
+mel_fn = lambda x: mel_spectrogram_torch(
+    x,
+    **{
+        "n_fft": 1024,
+        "win_size": 1024,
+        "hop_size": 256,
+        "num_mels": 100,
+        "sampling_rate": 24000,
+        "fmin": 0,
+        "fmax": None,
+        "center": False,
+    },
+)
+
+mel_fn_v4 = lambda x: mel_spectrogram_torch(
+    x,
+    **{
+        "n_fft": 1280,
+        "win_size": 1280,
+        "hop_size": 320,
+        "num_mels": 100,
+        "sampling_rate": 32000,
+        "fmin": 0,
+        "fmax": None,
+        "center": False,
+    },
+)
+
 @torch.no_grad()
 def vc_main(
     ref_wav_path,
     source_wav_path,
-    source_text,  
+    ref_text,         #参考音频文本参数（v3/v4 需要）
+    source_text,     
     speed=1,
     pitch_change=0, 
+    sample_steps=8,  
 ):
     global cache
     if ref_wav_path:
         pass
     else:
         gr.Warning(i18n("请上传参考音频"))
-
-    if not source_wav_path:
-        gr.Warning(i18n("请上传源音频"))
-        
     if not source_text:
-        gr.Warning(i18n("请填写源音频对应的文本"))
+        gr.Warning(i18n("请输入源音频对应的文本"))
+    
+    if model_version in v3v4set and not ref_text:
+        gr.Warning(i18n("v3/v4模型需要输入参考音频对应的文本"))
 
     if model_version in v3v4set:
         ref_free = False
@@ -527,15 +563,17 @@ def vc_main(
         else:
             wav16k = wav16k.to(device)
 
-        vc_wav16k, sr = librosa.load(source_wav_path, sr=16000)
+        ssl_content = ssl_model.model(wav16k.unsqueeze(0))["last_hidden_state"].transpose(1, 2)  
+        codes = vq_model.extract_latent(ssl_content)
+        prompt_semantic = codes[0, 0]
+        prompt = prompt_semantic.unsqueeze(0).to(device)
 
+        vc_wav16k, sr = librosa.load(source_wav_path, sr=16000)
         vc_wav16k = torch.from_numpy(vc_wav16k)
         if is_half == True:
             vc_wav16k = vc_wav16k.half().to(device)
         else:
-            vc_wav16k = vc_wav16k.to(device)
-        
-       
+            vc_wav16k = vc_wav16k.to(device)        
         vc_ssl_content = ssl_model.model(vc_wav16k.unsqueeze(0))["last_hidden_state"].transpose(1, 2)
         vc_codes = vq_model.extract_latent(vc_ssl_content)
         vc_prompt_semantic = vc_codes[0, 0]
@@ -562,22 +600,90 @@ def vc_main(
             refers = [refers]
             if is_v2pro:
                 sv_emb = [sv_cn_model.compute_embedding3(audio_tensor)]
-
+        
         text = source_text
-        print(f"Processing manual text: {text}")
-
+        print(f"Processing Text (v1/v2): {text}")
+        
         phones2, bert2, norm_text2 = get_phones_and_bert(text, "all_zh", version)
         
         if is_v2pro:
-            # v2ProPlus
+            # v2Pro, v2ProPlus
             audio = vq_model.decode(
                 vc_prompt.unsqueeze(0), torch.LongTensor(phones2).to(device).unsqueeze(0), refers, speed=speed, sv_emb=sv_emb
             )[0][0]
         else:
-            # v2
+            # v1, v2
             audio = vq_model.decode(
                 vc_prompt.unsqueeze(0), torch.LongTensor(phones2).to(device).unsqueeze(0), refers, speed=speed
             )[0][0]
+    else: # v3, v4
+        refer, _ = get_spepc(hps, ref_wav_path, dtype, device)
+        
+        prompt_text = ref_text
+        print(f"Processing Prompt Text (v3/v4): {prompt_text}")
+        phones1, bert1, norm_text1 = get_phones_and_bert(prompt_text, "all_zh", version)
+        phoneme_ids0 = torch.LongTensor(phones1).to(device).unsqueeze(0)
+
+        text = source_text
+        print(f"Processing Target Text (v3/v4): {text}")
+        phones2, bert2, norm_text2 = get_phones_and_bert(text, "all_zh", version)
+        phoneme_ids1 = torch.LongTensor(phones2).to(device).unsqueeze(0) 
+        
+        fea_ref, ge = vq_model.decode_encp(prompt.unsqueeze(0), phoneme_ids0, refer)       
+        
+        ref_audio, sr = torchaudio.load(ref_wav_path)
+        ref_audio = ref_audio.to(device).float()
+        if ref_audio.shape[0] == 2:
+            ref_audio = ref_audio.mean(0).unsqueeze(0)
+        tgt_sr=24000 if model_version=="v3"else 32000  
+        if sr != tgt_sr:
+            ref_audio = resample(ref_audio, sr, tgt_sr, device)   
+        mel2 = mel_fn(ref_audio)if model_version=="v3"else mel_fn_v4(ref_audio)
+        mel2 = norm_spec(mel2)      
+        T_min = min(mel2.shape[2], fea_ref.shape[2])
+        mel2 = mel2[:, :, :T_min]
+        fea_ref = fea_ref[:, :, :T_min]
+        Tref=468 if model_version=="v3"else 500
+        Tchunk=934 if model_version=="v3"else 1000
+
+        if T_min > Tref:
+            mel2 = mel2[:, :, -Tref:]
+            fea_ref = fea_ref[:, :, -Tref:]
+            T_min = Tref
+        chunk_len = Tchunk - T_min
+        mel2 = mel2.to(dtype)
+
+        fea_todo, ge = vq_model.decode_encp(vc_prompt.unsqueeze(0), phoneme_ids1, refer, ge, speed)
+        cfm_resss = []
+        idx = 0
+        while 1:
+            fea_todo_chunk = fea_todo[:, :, idx : idx + chunk_len]
+            if fea_todo_chunk.shape[-1] == 0:
+                break
+            idx += chunk_len
+            fea = torch.cat([fea_ref, fea_todo_chunk], 2).transpose(2, 1)
+            cfm_res = vq_model.cfm.inference(
+                fea, torch.LongTensor([fea.size(1)]).to(fea.device), mel2, sample_steps, inference_cfg_rate=0
+            )
+            cfm_res = cfm_res[:, :, mel2.shape[2] :]
+            mel2 = cfm_res[:, :, -T_min:]
+            fea_ref = fea_todo_chunk[:, :, -T_min:]
+            cfm_resss.append(cfm_res)
+        
+        cfm_res = torch.cat(cfm_resss, 2)
+        cfm_res = denorm_spec(cfm_res)
+
+        if model_version=="v3":
+            if bigvgan_model == None:
+                init_bigvgan()
+        else:#v4
+            if hifigan_model == None:
+                init_hifigan()
+        vocoder_model=bigvgan_model if model_version=="v3"else hifigan_model
+        
+        with torch.inference_mode():
+            wav_gen = vocoder_model(cfm_res)
+            audio = wav_gen[0][0]
    
     max_audio = torch.abs(audio).max()
     if max_audio > 1:
@@ -614,7 +720,6 @@ def html_center(text, label="p"):
                 <{label} style="margin: 0; padding: 0;">{text}</{label}>
                 </div>"""
 
-
 with gr.Blocks(title="GPT-SoVITS VC WebUI", analytics_enabled=False) as app:
     gr.HTML(
         top_html.format(
@@ -624,7 +729,7 @@ with gr.Blocks(title="GPT-SoVITS VC WebUI", analytics_enabled=False) as app:
         elem_classes="markdown",
     )
 
-    gr.Markdown(html_center(i18n("GPT-SoVITS-VC-with-text"), "h2"))
+    gr.Markdown(html_center(i18n("GPT-SoVITS-VC"), "h2"))
 
     with gr.Row():
         SoVITS_dropdown = gr.Dropdown(label=i18n("SoVITS模型列表"), choices=sorted(SoVITS_names, key=custom_sort_key), value=SoVITS_names[0])
@@ -632,16 +737,14 @@ with gr.Blocks(title="GPT-SoVITS VC WebUI", analytics_enabled=False) as app:
         status_label = gr.Markdown(value="")
     
     with gr.Group() as vc_mode:
-        gr.Markdown(html_center(i18n("语音转换：请上传参考音频，源音频并填写对应文本"), "h3"))
+        gr.Markdown(html_center(i18n("语音转换：请上传音频并填写对应文本"), "h3"))
         with gr.Row():
-            ref_wav = gr.Audio(label=i18n("参考音频（目标音色）"), type="filepath")
+            with gr.Column():
+                ref_wav = gr.Audio(label=i18n("参考音频（目标音色）"), type="filepath")
+                ref_text_input = gr.Textbox(label=i18n("参考音频文本"), placeholder=i18n("请输入参考音频中的内容（v3/v4模型必填）"))
             with gr.Column():
                 source_wav = gr.Audio(label=i18n("源音频（语义内容）"), type="filepath")
-                source_text_input = gr.Textbox(
-                    label=i18n("源音频对应的文本"), 
-                    placeholder=i18n("请输入源音频中说的话"),
-                    lines=2
-                )
+                source_text_input = gr.Textbox(label=i18n("源音频文本"), placeholder=i18n("请输入源音频中的内容（必填，替代语音识别）"))
         
         with gr.Row():
             speed_slider = gr.Slider(minimum=0.6, maximum=1.65, step=0.05, label=i18n("语速调整"), value=1)
@@ -650,11 +753,7 @@ with gr.Blocks(title="GPT-SoVITS VC WebUI", analytics_enabled=False) as app:
         vc_button = gr.Button(i18n("执行语音转换"), variant="primary")
         vc_output = gr.Audio(label=i18n("输出结果"))
         
-        vc_button.click(
-            vc_main, 
-            inputs=[ref_wav, source_wav, source_text_input, speed_slider, pitch_shift_slider], 
-            outputs=[vc_output]
-        )
+        vc_button.click(vc_main, inputs=[ref_wav, source_wav, ref_text_input, source_text_input, speed_slider, pitch_shift_slider], outputs=[vc_output])
 
     def refresh_models():
         SoVITS_names, GPT_names = get_weights_names()
@@ -669,4 +768,4 @@ with gr.Blocks(title="GPT-SoVITS VC WebUI", analytics_enabled=False) as app:
     )
 
 if __name__ == "__main__":
-    app.queue().launch(server_name="0.0.0.0", inbrowser=True, share=is_share, server_port=infer_ttswebui)
+    app.queue().launch(server_name="0.0.0.0", inbrowser=True, share=is_share, server_port=infer_vcwebui)

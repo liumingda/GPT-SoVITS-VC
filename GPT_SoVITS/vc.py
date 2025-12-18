@@ -54,8 +54,8 @@ with open("./weight.json", "r", encoding="utf-8") as file:
 
 cnhubert_base_path = os.environ.get("cnhubert_base_path", "GPT_SoVITS/pretrained_models/chinese-hubert-base")
 bert_path = os.environ.get("bert_path", "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large")
-infer_ttswebui = os.environ.get("infer_ttswebui", 9873)
-infer_ttswebui = int(infer_ttswebui)
+infer_vcwebui = os.environ.get("infer_vcwebui", 9873)
+infer_vcwebui = int(infer_vcwebui)
 is_share = os.environ.get("is_share", "False")
 is_share = eval(is_share)
 if "_CUDA_VISIBLE_DEVICES" in os.environ:
@@ -490,12 +490,48 @@ spec_max = 2
 
 cache = {}
 
+# 将频谱 x ∈ [-12, 2] 映射到 [-1, 1] 范围；这是深度学习模型常见的输入规范化范围；
+def norm_spec(x):
+    return (x - spec_min) / (spec_max - spec_min) * 2 - 1
+
+# 将归一化后的 x ∈ [-1, 1] 映射回原始频谱幅值范围 [spec_min, spec_max]；常用于从模型输出还原真实谱图做可视化或合成。
+def denorm_spec(x):
+    return (x + 1) / 2 * (spec_max - spec_min) + spec_min
+
+mel_fn = lambda x: mel_spectrogram_torch(
+    x,
+    **{
+        "n_fft": 1024,
+        "win_size": 1024,
+        "hop_size": 256,
+        "num_mels": 100,
+        "sampling_rate": 24000,
+        "fmin": 0,
+        "fmax": None,
+        "center": False,
+    },
+)
+# 这是给 SoVITS v4 模型 用的配置
+mel_fn_v4 = lambda x: mel_spectrogram_torch(
+    x,
+    **{
+        "n_fft": 1280,
+        "win_size": 1280,
+        "hop_size": 320,
+        "num_mels": 100,
+        "sampling_rate": 32000,
+        "fmin": 0,
+        "fmax": None,
+        "center": False,
+    },
+)
 @torch.no_grad()
 def vc_main(
     ref_wav_path,
     source_wav_path,
     speed=1,
     pitch_change=0, 
+    sample_steps=8,   # 推理步数（仅 v3 模型用）
 ):
     global cache
     if ref_wav_path:
@@ -521,6 +557,14 @@ def vc_main(
         else:
             wav16k = wav16k.to(device)
 
+        # 将参考音频送入 SSL 模型 提取音频语义特征（类似语义内容）仅 v3,v4版本需要
+        ssl_content = ssl_model.model(wav16k.unsqueeze(0))["last_hidden_state"].transpose(1, 2)  # .float()
+        # 用 VQ 模型量化后得到离散表示 codes
+        codes = vq_model.extract_latent(ssl_content)
+        # 进行speech token 维度变换
+        prompt_semantic = codes[0, 0]
+        prompt = prompt_semantic.unsqueeze(0).to(device)
+
         vc_wav16k, sr = librosa.load(source_wav_path, sr=16000)
         vc_wav16k = torch.from_numpy(vc_wav16k)
         if is_half == True:
@@ -540,7 +584,10 @@ def vc_main(
     t2 = ttime()
     t3 = ttime()
     is_v2pro = model_version in {"v2Pro", "v2ProPlus"}
-    
+
+    asr_model = AutoModel(model=
+        "%s/tools/asr/models/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch" % (now_dir,),
+    )  
     if model_version not in v3v4set:
         refers = []
         if is_v2pro:
@@ -554,9 +601,6 @@ def vc_main(
             if is_v2pro:
                 sv_emb = [sv_cn_model.compute_embedding3(audio_tensor)]
         
-        asr_model = AutoModel(model=
-            "%s/tools/asr/models/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch" % (now_dir,),
-        )
 
         # 使用 ASR 识别源音频内容
         res = asr_model.generate(input=source_wav_path)
@@ -564,15 +608,83 @@ def vc_main(
         phones2, bert2, norm_text2 = get_phones_and_bert(text, "all_zh", version)
         
         if is_v2pro:
-            # v2ProPlus
+            # v2Pro, v2ProPlus
             audio = vq_model.decode(
                 vc_prompt.unsqueeze(0), torch.LongTensor(phones2).to(device).unsqueeze(0), refers, speed=speed, sv_emb=sv_emb
             )[0][0]
         else:
-            # v2
+            # v1, v2
             audio = vq_model.decode(
                 vc_prompt.unsqueeze(0), torch.LongTensor(phones2).to(device).unsqueeze(0), refers, speed=speed
             )[0][0]
+    else: # v3, v4
+        refer, _ = get_spepc(hps, ref_wav_path, dtype, device)
+        ref_res = asr_model.generate(input=ref_wav_path)
+        prompt_text = ref_res[0]["text"]
+        phones1, bert1, norm_text1 = get_phones_and_bert(prompt_text, "all_zh", version)
+        phoneme_ids0 = torch.LongTensor(phones1).to(device).unsqueeze(0)
+
+        res = asr_model.generate(input=source_wav_path)
+        text = res[0]["text"]
+        phones2, bert2, norm_text2 = get_phones_and_bert(text, "all_zh", version)
+        phoneme_ids1 = torch.LongTensor(phones2).to(device).unsqueeze(0) 
+        fea_ref, ge = vq_model.decode_encp(prompt.unsqueeze(0), phoneme_ids0, refer)       
+        # 参考音频加载及对齐 Mel
+        ref_audio, sr = torchaudio.load(ref_wav_path)
+        ref_audio = ref_audio.to(device).float()
+        if ref_audio.shape[0] == 2:
+            ref_audio = ref_audio.mean(0).unsqueeze(0)
+        tgt_sr=24000 if model_version=="v3"else 32000  
+        if sr != tgt_sr:
+            ref_audio = resample(ref_audio, sr, tgt_sr, device)   
+        mel2 = mel_fn(ref_audio)if model_version=="v3"else mel_fn_v4(ref_audio)
+        mel2 = norm_spec(mel2)      
+        T_min = min(mel2.shape[2], fea_ref.shape[2])
+        mel2 = mel2[:, :, :T_min]
+        fea_ref = fea_ref[:, :, :T_min]
+        Tref=468 if model_version=="v3"else 500
+        Tchunk=934 if model_version=="v3"else 1000
+
+        if T_min > Tref:
+            mel2 = mel2[:, :, -Tref:]
+            fea_ref = fea_ref[:, :, -Tref:]
+            T_min = Tref
+        chunk_len = Tchunk - T_min
+        mel2 = mel2.to(dtype)
+
+        fea_todo, ge = vq_model.decode_encp(vc_prompt.unsqueeze(0), phoneme_ids1, refer, ge, speed)
+        cfm_resss = []
+        idx = 0
+        while 1:
+            fea_todo_chunk = fea_todo[:, :, idx : idx + chunk_len]
+            if fea_todo_chunk.shape[-1] == 0:
+                break
+            idx += chunk_len
+            fea = torch.cat([fea_ref, fea_todo_chunk], 2).transpose(2, 1)
+            cfm_res = vq_model.cfm.inference(
+                fea, torch.LongTensor([fea.size(1)]).to(fea.device), mel2, sample_steps, inference_cfg_rate=0
+            )
+            # 最后得到 mel 频谱块 cfm_res，更新 mel2 与 fea_ref 为下次拼接参考
+            cfm_res = cfm_res[:, :, mel2.shape[2] :]
+            mel2 = cfm_res[:, :, -T_min:]
+            fea_ref = fea_todo_chunk[:, :, -T_min:]
+            cfm_resss.append(cfm_res)
+        # 拼接所有生成的 mel 并反归一化, 将所有 mel 块拼接为一个完整的频谱图。调用 denorm_spec() 反归一化回原始值域。
+        cfm_res = torch.cat(cfm_resss, 2)
+        cfm_res = denorm_spec(cfm_res)
+
+        # Vocoder 解码成音频波形, 加载声码器模型（v3 对应 BigVGAN，v4 对应 HiFiGAN）
+        if model_version=="v3":
+            if bigvgan_model == None:
+                init_bigvgan()
+        else:#v4
+            if hifigan_model == None:
+                init_hifigan()
+        vocoder_model=bigvgan_model if model_version=="v3"else hifigan_model
+        # 将最终 mel 频谱输入声码器，合成出音频波形 audio（Tensor）。
+        with torch.inference_mode():
+            wav_gen = vocoder_model(cfm_res)
+            audio = wav_gen[0][0]  # .cpu().detach().numpy()
    
     max_audio = torch.abs(audio).max()
     if max_audio > 1:
@@ -653,4 +765,4 @@ with gr.Blocks(title="GPT-SoVITS VC WebUI", analytics_enabled=False) as app:
     )
 
 if __name__ == "__main__":
-    app.queue().launch(server_name="0.0.0.0", inbrowser=True, share=is_share, server_port=infer_ttswebui)
+    app.queue().launch(server_name="0.0.0.0", inbrowser=True, share=is_share, server_port=infer_vcwebui)
