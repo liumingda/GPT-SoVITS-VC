@@ -41,5 +41,7 @@ v1, v2, v3, v4, v2pro, v2proplus
 
 ### 参考项目
 https://github.com/RVC-Boss/GPT-SoVITS
+
 https://github.com/FunAudioLLM/CosyVoice
+
 https://github.com/huangxu1991/GPT-SoVITS-VC
