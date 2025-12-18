@@ -1,4 +1,4 @@
-# GPT-SoVITS 语音转换 (VC)
+# GPT-SoVITS-VC (zero-shot)
 
 本项目基于 GPT-SoVITS 实现zero-shot 语音转换（Voice Conversion, VC）功能。它能够将源音频中的语音转换为参考音频的音色，同时保留源音频的语音内容和韵律语调。
 
