@@ -38,3 +38,8 @@ https://github.com/user-attachments/assets/a81c8084-dd99-4886-af99-1deea9c260ff
 ### 支持的模型版本
 本项目支持 GPT-SoVITS 的所有主要版本：
 v1, v2, v3, v4, v2pro, v2proplus
+
+### 参考项目
+https://github.com/RVC-Boss/GPT-SoVITS
+https://github.com/FunAudioLLM/CosyVoice
+https://github.com/huangxu1991/GPT-SoVITS-VC
