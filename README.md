@@ -4,8 +4,11 @@
 
 ## 概述
 效仿Cosyvoice的VC实现的各个版本的GPT-SoVits的VC
+
 Step 1: 移除GPT模块，使用 Hubert (ssl_model) + VQ-VAE (vq_model) 提取源音频的 semantic token；
-Step 2: 将参考音频传入模型提取音色特征。
+
+Step 2: 将参考音频传入模型提取音色特征；
+
 Step 3: 使用 ASR 模型自动识别源音频（以及 v3/v4 的参考音频）的内容(或者手动输入)，送入 Text Encoder，帮助转换后的音频合成。
 
 环境配置和模型下载与原项目相同，本项目目前提供两个主要的语音转换脚本：
